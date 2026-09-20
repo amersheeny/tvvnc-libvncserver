@@ -684,6 +684,12 @@ endif(WITH_EXAMPLES)
 
 if(WITH_TESTS)
 
+if(UNIX AND WITH_LIBVNCCLIENT AND WITH_THREADS AND CMAKE_USE_PTHREADS_INIT)
+  add_executable(test_readertest ${TESTS_DIR}/readertest.c)
+  target_link_libraries(test_readertest vncclient ${CMAKE_THREAD_LIBS_INIT})
+  add_test(NAME client_socket_reader COMMAND test_readertest)
+endif()
+
 # First fuzzing
 if(DEFINED ENV{LIB_FUZZING_ENGINE} AND WITH_LIBVNCSERVER)
   add_executable(fuzz_server ${TESTS_DIR}/fuzz_server.c)

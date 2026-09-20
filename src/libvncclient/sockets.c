@@ -20,6 +20,8 @@
 
 /*
  * sockets.c - functions to deal with sockets.
+ * Modified 2026-09-21 for TV Console: separate socket readiness from buffered
+ * message readiness and account read timeouts by cumulative monotonic wait.
  */
 
 #ifdef __STRICT_ANSI__
@@ -36,7 +38,11 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <assert.h>
+#include <time.h>
 #include <rfb/rfbclient.h>
+#ifdef WIN32
+#include <windows.h>
+#endif
 #include "sockets.h"
 #include "tls.h"
 #include "sasl.h"
@@ -44,6 +50,52 @@
 void PrintInHex(char *buf, int len);
 
 rfbBool errorMessageOnReadFailure = TRUE;
+
+static int WaitForSocket(rfbClient* client, unsigned int usecs);
+
+static rfbBool MonotonicMicros(uint64_t* result)
+{
+#ifdef WIN32
+  LARGE_INTEGER ticks, frequency;
+  if (!QueryPerformanceCounter(&ticks) || !QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0)
+    return FALSE;
+  *result = ((uint64_t)ticks.QuadPart / frequency.QuadPart) * 1000000 +
+      ((uint64_t)ticks.QuadPart % frequency.QuadPart) * 1000000 / frequency.QuadPart;
+#else
+  struct timespec now;
+  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return FALSE;
+  *result = (uint64_t)now.tv_sec * 1000000 + now.tv_nsec / 1000;
+#endif
+  return TRUE;
+}
+
+/* Only real socket waiting consumes readTimeout. Progress does not reset the
+ * cumulative budget, but copying/processing ready bytes does not consume it. */
+static rfbBool WaitForRead(rfbClient* client, uint64_t* remaining)
+{
+  uint64_t before, after, elapsed;
+  unsigned int wait = 100000;
+  int status;
+  if (client->readTimeout && !*remaining) {
+    rfbClientLog("Connection timed out\n");
+    return FALSE;
+  }
+  if (client->readTimeout && *remaining < wait) wait = (unsigned int)*remaining;
+  if (client->readTimeout && !MonotonicMicros(&before)) {
+    rfbClientLog("Monotonic clock unavailable\n");
+    return FALSE;
+  }
+  status = WaitForSocket(client, wait);
+  if (client->readTimeout) {
+    if (!MonotonicMicros(&after) || after < before) {
+      rfbClientLog("Monotonic clock unavailable\n");
+      return FALSE;
+    }
+    elapsed = after - before;
+    *remaining = elapsed >= *remaining ? 0 : *remaining - elapsed;
+  }
+  return status >= 0;
+}
 
 /*
  * ReadFromRFBServer is called whenever we want to read some data from the RFB
@@ -62,8 +114,7 @@ rfbBool errorMessageOnReadFailure = TRUE;
 rfbBool
 ReadFromRFBServer(rfbClient* client, char *out, unsigned int n)
 {
-  const int USECS_WAIT_PER_RETRY = 100000;
-  int retries = 0;
+  uint64_t remainingWait = (uint64_t)client->readTimeout * 1000000;
 #undef DEBUG_READ_EXACT
 #ifdef DEBUG_READ_EXACT
 	char* oout=out;
@@ -153,16 +204,10 @@ ReadFromRFBServer(rfbClient* client, char *out, unsigned int n)
       if (i <= 0) {
 	if (i < 0) {
 	  if (errno == EWOULDBLOCK || errno == EAGAIN) {
-	    if (client->readTimeout > 0 &&
-		++retries > (client->readTimeout * 1000 * 1000 / USECS_WAIT_PER_RETRY))
-	    {
-	      rfbClientLog("Connection timed out\n");
-	      return FALSE;
-	    }
 	    /* TODO:
 	       ProcessXtEvents();
 	    */
-	    WaitForMessage(client, USECS_WAIT_PER_RETRY);
+	    if (!WaitForRead(client, &remainingWait)) return FALSE;
 	    i = 0;
 	  } else {
 	    rfbClientErr("read (%d: %s)\n",errno,strerror(errno));
@@ -202,16 +247,10 @@ ReadFromRFBServer(rfbClient* client, char *out, unsigned int n)
 	  errno=WSAGetLastError();
 #endif
 	  if (errno == EWOULDBLOCK || errno == EAGAIN) {
-	    if (client->readTimeout > 0 &&
-		++retries > (client->readTimeout * 1000 * 1000 / USECS_WAIT_PER_RETRY))
-	    {
-		rfbClientLog("Connection timed out\n");
-		return FALSE;
-	    }
 	    /* TODO:
 	       ProcessXtEvents();
 	    */
-	    WaitForMessage(client, USECS_WAIT_PER_RETRY);
+	    if (!WaitForRead(client, &remainingWait)) return FALSE;
 	    i = 0;
 	  } else {
 	    rfbClientErr("read (%s)\n",strerror(errno));
@@ -855,10 +894,6 @@ PrintInHex(char *buf, int len)
 
 int WaitForMessage(rfbClient* client,unsigned int usecs)
 {
-  fd_set fds;
-  struct timeval timeout;
-  int num;
-
   if (client->serverPort==-1)
     /* playing back vncrec file */
     return 1;
@@ -867,6 +902,14 @@ int WaitForMessage(rfbClient* client,unsigned int usecs)
   if (client->buffered > 0) {
     return 1;
   }
+  return WaitForSocket(client, usecs);
+}
+
+static int WaitForSocket(rfbClient* client, unsigned int usecs)
+{
+  fd_set fds;
+  struct timeval timeout;
+  int num;
 
   timeout.tv_sec=(usecs/1000000);
   timeout.tv_usec=(usecs%1000000);
@@ -889,5 +932,4 @@ int WaitForMessage(rfbClient* client,unsigned int usecs)
 
   return num;
 }
-
 
