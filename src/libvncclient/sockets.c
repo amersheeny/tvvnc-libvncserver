@@ -20,8 +20,8 @@
 
 /*
  * sockets.c - functions to deal with sockets.
- * Modified 2026-09-21 for TV VNC: separate socket readiness from buffered
- * message readiness and account read timeouts by cumulative monotonic wait.
+ * Modified 2026-09-21 and 2026-09-23 for TV VNC: distinguish buffered and socket
+ * readiness, account monotonic read waits, and preserve interrupted socket waits.
  */
 
 #ifdef __STRICT_ANSI__
@@ -345,6 +345,12 @@ WriteToRFBServer(rfbClient* client, const char *buf, unsigned int n)
 	  FD_SET(client->sock,&fds);
 
 	  if (select(client->sock+1, NULL, &fds, NULL, NULL) <= 0) {
+#ifdef WIN32
+            errno = WSAGetLastError();
+            if (errno == WSAEINTR) continue;
+#else
+            if (errno == EINTR) continue;
+#endif
 	    rfbClientErr("select\n");
 	    return FALSE;
 	  }

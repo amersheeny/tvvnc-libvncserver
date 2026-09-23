@@ -1,3 +1,4 @@
+# Modified 2026-09-21 and 2026-09-23 for TV VNC: socket-reader regression target.
 cmake_minimum_required(VERSION 3.10)
 
 set(PROJECT_LANGUAGES C)

@@ -1,4 +1,4 @@
-/* TV VNC additions, 2026-09-21. GPL-2.0-or-later, as LibVNCClient.
+/* TV VNC additions, 2026-09-21 and 2026-09-23. GPL-2.0-or-later, as LibVNCClient.
  * Tests the actual socket reader; CHECK remains active in release builds. */
 #include <rfb/rfbclient.h>
 #include <sys/socket.h>
@@ -8,6 +8,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <string.h>
+#include <errno.h>
 
 #define CHECK(condition) do { if (!(condition)) { \
   fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #condition); exit(1); \
@@ -121,6 +122,53 @@ static void interrupted(unsigned size, rfbBool send_data, rfbBool message_wait) 
   else for (i = 0; i < size; ++i) CHECK((unsigned char)bytes[i] == i % 251);
   free(bytes); rfbClientCleanup(client); close(fd[1]);
 }
+struct drain { struct interrupter sender; unsigned filled, received; rfbBool valid; };
+static void* drain_interrupted_write(void* raw) {
+  struct drain* sink = raw;
+  char bytes[4096];
+  ssize_t count;
+  interrupt_reader(&sink->sender);
+  while ((count = read(sink->sender.fd, bytes, sizeof(bytes))) > 0) {
+    unsigned i;
+    for (i = 0; i < (unsigned)count; ++i) {
+      unsigned offset = sink->received + i;
+      char expected = offset < sink->filled ? 0 : offset == sink->filled ? 'V' : 'N';
+      if (offset >= sink->filled + 2 || bytes[i] != expected) sink->valid = FALSE;
+    }
+    sink->received += (unsigned)count;
+    if (sink->received >= sink->filled + 2) break;
+  }
+  return NULL;
+}
+static void interrupted_write(void) {
+  int fd[2], limit = 4096, caught;
+  char fill[4096] = {0};
+  ssize_t count;
+  pthread_t thread;
+  rfbBool accepted;
+  struct sigaction handler = {0}, previous;
+  rfbClient* client = client_pair(fd);
+  struct drain sink = {{pthread_self(), fd[1], 0, 4}, 0, 0, TRUE};
+  CHECK(setsockopt(fd[0], SOL_SOCKET, SO_SNDBUF, &limit, sizeof(limit)) == 0);
+  while ((count = write(fd[0], fill, sizeof(fill))) > 0) sink.filled += (unsigned)count;
+  CHECK(sink.filled > 0 && (errno == EAGAIN || errno == EWOULDBLOCK));
+  handler.sa_handler = interrupt_handler;
+  CHECK(sigemptyset(&handler.sa_mask) == 0);
+  CHECK(sigaction(SIGUSR1, &handler, &previous) == 0);
+  signals_caught = 0;
+  CHECK(pthread_create(&thread, NULL, drain_interrupted_write, &sink) == 0);
+  reading = 1;
+  accepted = WriteToRFBServer(client, "VN", 2);
+  reading = 0;
+  caught = signals_caught;
+  shutdown(fd[0], SHUT_RDWR);
+  CHECK(pthread_join(thread, NULL) == 0);
+  CHECK(sigaction(SIGUSR1, &previous, NULL) == 0);
+  printf("interrupted write accepted=%d signals=%d filled=%u received=%u\n",
+      accepted != 0, caught, sink.filled, sink.received);
+  CHECK(caught > 0 && accepted && sink.valid && sink.received == sink.filled + 2);
+  rfbClientCleanup(client); close(fd[1]);
+}
 int main(int argc, char** argv) {
   int fd[2]; char byte;
   uint64_t started;
@@ -131,6 +179,7 @@ int main(int argc, char** argv) {
     else if (!strcmp(argv[1], "signal-large")) interrupted(307200, TRUE, FALSE);
     else if (!strcmp(argv[1], "signal-timeout")) interrupted(2, FALSE, FALSE);
     else if (!strcmp(argv[1], "signal-message")) interrupted(2, FALSE, TRUE);
+    else if (!strcmp(argv[1], "signal-write")) interrupted_write();
     else CHECK(!"unknown case");
     return 0;
   }
@@ -165,6 +214,7 @@ int main(int argc, char** argv) {
   interrupted(307200, TRUE, FALSE);
   interrupted(2, FALSE, FALSE);
   interrupted(2, FALSE, TRUE);
+  interrupted_write();
   puts("PASS buffered, fragmented, cumulative idle, unlimited, EOF, invalid fd and replay reads");
   return 0;
 }
