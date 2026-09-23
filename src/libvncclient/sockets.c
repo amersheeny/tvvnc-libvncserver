@@ -20,7 +20,7 @@
 
 /*
  * sockets.c - functions to deal with sockets.
- * Modified 2026-09-21 for TV Console: separate socket readiness from buffered
+ * Modified 2026-09-21 for TV VNC: separate socket readiness from buffered
  * message readiness and account read timeouts by cumulative monotonic wait.
  */
 
@@ -926,10 +926,12 @@ static int WaitForSocket(rfbClient* client, unsigned int usecs)
   if(num<0) {
 #ifdef WIN32
     errno=WSAGetLastError();
+    if (errno == WSAEINTR) return 0;
+#else
+    if (errno == EINTR) return 0;
 #endif
     rfbClientLog("Waiting for message failed: %d (%s)\n",errno,strerror(errno));
   }
 
   return num;
 }
-

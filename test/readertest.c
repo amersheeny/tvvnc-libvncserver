@@ -1,4 +1,4 @@
-/* TV Console additions, 2026-09-21. GPL-2.0-or-later, as LibVNCClient.
+/* TV VNC additions, 2026-09-21. GPL-2.0-or-later, as LibVNCClient.
  * Tests the actual socket reader; CHECK remains active in release builds. */
 #include <rfb/rfbclient.h>
 #include <sys/socket.h>
@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <time.h>
 #include <unistd.h>
+#include <string.h>
 
 #define CHECK(condition) do { if (!(condition)) { \
   fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #condition); exit(1); \
@@ -67,11 +68,72 @@ static void fragmented(unsigned size, unsigned pieces, unsigned gap, unsigned ti
   if (!expected) CHECK(elapsed >= 900 && elapsed < 2500);
   free(result); rfbClientCleanup(client); close(fd[1]);
 }
-int main(void) {
+static volatile sig_atomic_t reading, signals_caught;
+static void interrupt_handler(int value) {
+  (void)value;
+  if (reading) ++signals_caught;
+}
+struct interrupter { pthread_t reader; int fd; unsigned size, count; };
+static void* interrupt_reader(void* raw) {
+  struct interrupter* sender = raw;
+  unsigned i;
+  for (i = 0; i < sender->count; ++i) {
+    usleep(20000);
+    CHECK(pthread_kill(sender->reader, SIGUSR1) == 0);
+  }
+  if (sender->size) {
+    struct writer writer = {sender->fd, sender->size, 1, 0};
+    send_fragments(&writer);
+  }
+  return NULL;
+}
+static void interrupted(unsigned size, rfbBool send_data, rfbBool message_wait) {
+  int fd[2], accepted, caught;
+  unsigned i;
+  uint64_t started, elapsed;
+  pthread_t thread;
+  rfbClient* client = client_pair(fd);
+  char* bytes = malloc(size);
+  struct sigaction handler = {0}, previous;
+  struct interrupter sender = {pthread_self(), fd[1], send_data ? size : 0,
+      send_data || message_wait ? 4 : 80};
+  CHECK(bytes != NULL);
+  handler.sa_handler = interrupt_handler;
+  CHECK(sigemptyset(&handler.sa_mask) == 0);
+  CHECK(sigaction(SIGUSR1, &handler, &previous) == 0);
+  signals_caught = 0;
+  CHECK(pthread_create(&thread, NULL, interrupt_reader, &sender) == 0);
+  started = millis();
+  reading = 1;
+  accepted = message_wait ? WaitForMessage(client, 500000) : ReadFromRFBServer(client, bytes, size);
+  reading = 0;
+  caught = signals_caught;
+  elapsed = millis() - started;
+  shutdown(fd[0], SHUT_RDWR);
+  CHECK(pthread_join(thread, NULL) == 0);
+  CHECK(sigaction(SIGUSR1, &previous, NULL) == 0);
+  printf("interrupted bytes=%u send=%d message=%d result=%d signals=%d elapsed_ms=%llu\n",
+      size, send_data, message_wait, accepted, caught, (unsigned long long)elapsed);
+  CHECK(caught > 0);
+  CHECK(message_wait ? accepted == 0 : (accepted != 0) == (send_data != 0));
+  if (message_wait) CHECK(elapsed < 250);
+  else if (!send_data) CHECK(elapsed >= 900 && elapsed < 2500);
+  else for (i = 0; i < size; ++i) CHECK((unsigned char)bytes[i] == i % 251);
+  free(bytes); rfbClientCleanup(client); close(fd[1]);
+}
+int main(int argc, char** argv) {
   int fd[2]; char byte;
   uint64_t started;
   rfbClient* client;
   signal(SIGPIPE, SIG_IGN);
+  if (argc == 2) {
+    if (!strcmp(argv[1], "signal-short")) interrupted(2, TRUE, FALSE);
+    else if (!strcmp(argv[1], "signal-large")) interrupted(307200, TRUE, FALSE);
+    else if (!strcmp(argv[1], "signal-timeout")) interrupted(2, FALSE, FALSE);
+    else if (!strcmp(argv[1], "signal-message")) interrupted(2, FALSE, TRUE);
+    else CHECK(!"unknown case");
+    return 0;
+  }
   fragmented(2, 2, 50000, 1, TRUE);
   fragmented(20, 20, 20000, 1, TRUE);
   fragmented(307200, 20, 20000, 1, TRUE);
@@ -87,7 +149,9 @@ int main(void) {
   CHECK(!ReadFromRFBServer(client, &byte, 1));
   CHECK(millis() - started >= 900 && millis() - started < 2500);
   shutdown(fd[1], SHUT_WR);
+  started = millis();
   CHECK(!ReadFromRFBServer(client, &byte, 1));
+  CHECK(millis() - started < 250);
   rfbClientCleanup(client); close(fd[1]);
 
   client = rfbGetClient(8, 3, 4);
@@ -97,6 +161,10 @@ int main(void) {
   CHECK(WaitForMessage(client, 1000000) == 1);
   client->serverPort = 5900;
   rfbClientCleanup(client);
+  interrupted(2, TRUE, FALSE);
+  interrupted(307200, TRUE, FALSE);
+  interrupted(2, FALSE, FALSE);
+  interrupted(2, FALSE, TRUE);
   puts("PASS buffered, fragmented, cumulative idle, unlimited, EOF, invalid fd and replay reads");
   return 0;
 }

@@ -823,7 +823,7 @@ extern rfbBool SameMachine(rfbSocket sock);
  * will return.
  * @param client The client to cause to wait until a message is received
  * @param usecs The timeout in microseconds
- * @return the return value of the underlying select() call
+ * @return positive if ready, zero if timed out or interrupted, negative on error
  */
 extern int WaitForMessage(rfbClient* client,unsigned int usecs);
 
