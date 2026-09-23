@@ -1,4 +1,4 @@
-# Local TV Console dependency changes
+# TV VNC dependency changes
 
 Modified 2026-09-21, based on LibVNCServer commit
 `42494999e6492aaab9c1db785ecd293ef10b3aed`. Original copyright and
@@ -19,6 +19,6 @@ zero-timeout behavior, buffered/replay readiness, EOF, and invalid descriptors.
 Current runtime validation is macOS and Android without TLS/SASL. No Windows,
 TLS, or SASL runtime validation is claimed.
 
-This is a local development fork. No upstream submission or public publication
-has been authorized. A distributable app must use a fetchable fork URL before
-publication; a local filesystem URL is not a public release dependency.
+The maintained fork is https://github.com/amersheeny/tvvnc-libvncserver.
+Applications must pin a published commit from that fork rather than a local
+filesystem URL. These modifications have not been submitted upstream.
