@@ -684,6 +684,18 @@ endif(WITH_EXAMPLES)
 
 if(WITH_TESTS)
 
+if(UNIX)
+  add_executable(test_connecterror ${TESTS_DIR}/connecterrortest.c ${COMMON_DIR}/sockets.c)
+  add_test(NAME connect_error COMMAND test_connecterror)
+  add_executable(test_connectquery ${TESTS_DIR}/connectquerytest.c)
+  add_test(NAME connect_query COMMAND test_connectquery)
+  if(WITH_LIBVNCSERVER AND LIBVNCSERVER_IPv6)
+    add_executable(test_connecterrorlog ${TESTS_DIR}/connecterrorlogtest.c)
+    target_link_libraries(test_connecterrorlog vncserver)
+    add_test(NAME connect_error_log COMMAND test_connecterrorlog)
+  endif()
+endif()
+
 # First fuzzing
 if(DEFINED ENV{LIB_FUZZING_ENGINE} AND WITH_LIBVNCSERVER)
   add_executable(fuzz_server ${TESTS_DIR}/fuzz_server.c)

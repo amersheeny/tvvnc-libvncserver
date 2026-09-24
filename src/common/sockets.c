@@ -76,15 +76,17 @@ rfbBool sock_wait_for_connected(int socket, unsigned int timeout_seconds)
 #else
     int so_error;
     socklen_t len = sizeof so_error;
-    getsockopt(socket, SOL_SOCKET, SO_ERROR, &so_error, &len);
-    if (so_error!=0)
+    if (getsockopt(socket, SOL_SOCKET, SO_ERROR, &so_error, &len) < 0)
       return FALSE;
+    if (so_error!=0) {
+      errno = so_error;
+      return FALSE;
+    }
 #endif
     return TRUE;
   }
 
   return FALSE;
 }
-
 
 
