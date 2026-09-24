@@ -684,6 +684,20 @@ endif(WITH_EXAMPLES)
 
 if(WITH_TESTS)
 
+add_executable(test_sockwaittest ${TESTS_DIR}/sockwaittest.c)
+set_target_properties(test_sockwaittest PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test)
+if(WIN32)
+  target_link_libraries(test_sockwaittest ws2_32)
+endif()
+add_test(NAME sockwait COMMAND test_sockwaittest)
+
+if(UNIX)
+  add_executable(test_sockwaitsignaltest ${TESTS_DIR}/sockwaitsignaltest.c)
+  set_target_properties(test_sockwaitsignaltest PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test)
+  add_test(NAME sockwaitsignals COMMAND test_sockwaitsignaltest)
+  set_tests_properties(sockwaitsignals PROPERTIES TIMEOUT 15)
+endif()
+
 # First fuzzing
 if(DEFINED ENV{LIB_FUZZING_ENGINE} AND WITH_LIBVNCSERVER)
   add_executable(fuzz_server ${TESTS_DIR}/fuzz_server.c)
