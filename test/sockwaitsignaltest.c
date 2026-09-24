@@ -8,6 +8,7 @@
 #include "sockets.h"
 
 static unsigned int interrupted_selects;
+static int completion_error;
 static volatile sig_atomic_t signals_seen;
 static volatile sig_atomic_t slow_handler;
 
@@ -20,9 +21,20 @@ static int observed_select(int nfds, fd_set *readfds, fd_set *writefds,
     return result;
 }
 
+static int observed_getsockopt(int socket, int level, int option,
+                               void *value, socklen_t *length)
+{
+    int result = getsockopt(socket, level, option, value, length);
+    if (result == 0 && level == SOL_SOCKET && option == SO_ERROR)
+        completion_error = *(int *)value;
+    return result;
+}
+
 #define select observed_select
+#define getsockopt observed_getsockopt
 #include "../src/common/sockets.c"
 #undef select
+#undef getsockopt
 
 #define REQUIRE(condition) do { \
     if (!(condition)) { \
@@ -124,15 +136,21 @@ static int tcp_case(int listening)
     sender = socket(AF_INET, SOCK_STREAM, 0);
     REQUIRE(destination >= 0 && sender >= 0);
     REQUIRE(bind(destination, (struct sockaddr *)&address, sizeof(address)) == 0);
+    REQUIRE(bind(sender, (struct sockaddr *)&address, sizeof(address)) == 0);
     REQUIRE(getsockname(destination, (struct sockaddr *)&address, &length) == 0);
-    if (listening)
+    if (listening) {
         REQUIRE(listen(destination, 1) == 0);
+    } else {
+        close(destination);
+        destination = -1;
+    }
     REQUIRE(fcntl(sender, F_SETFL, O_NONBLOCK) == 0);
     connected = connect(sender, (struct sockaddr *)&address, sizeof(address));
     error = errno;
     printf("tcp listening=%d connect=%d errno=%d EINPROGRESS=%d\n",
            listening, connected, error, EINPROGRESS);
     REQUIRE(connected == -1 && error == EINPROGRESS);
+    completion_error = -1;
     result = sock_wait_for_connected(sender, 1);
     if (listening && result) {
         char value;
@@ -143,9 +161,12 @@ static int tcp_case(int listening)
         close(peer);
     }
     close(sender);
-    close(destination);
-    printf("tcp listening=%d helper_result=%d\n", listening, result);
-    return !!result != !!listening;
+    if (destination >= 0)
+        close(destination);
+    printf("tcp listening=%d helper_result=%d SO_ERROR=%d ECONNREFUSED=%d\n",
+           listening, result, completion_error, ECONNREFUSED);
+    return !!result != !!listening ||
+           completion_error != (listening ? 0 : ECONNREFUSED);
 }
 
 int main(void)
