@@ -25,8 +25,27 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
+#include <time.h>
 
 #include "sockets.h"
+
+#ifdef WIN32
+#include <windows.h>
+#endif
+
+
+static rfbBool sock_monotonic_time(uint64_t *microseconds)
+{
+#ifdef WIN32
+  *microseconds = GetTickCount64() * 1000;
+#else
+  struct timespec now;
+  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+    return FALSE;
+  *microseconds = (uint64_t)now.tv_sec * 1000000 + now.tv_nsec / 1000;
+#endif
+  return TRUE;
+}
 
 
 rfbBool sock_set_nonblocking(rfbSocket sock, rfbBool non_blocking, void (*log)(const char *format, ...))
@@ -56,6 +75,8 @@ rfbBool sock_wait_for_connected(int socket, unsigned int timeout_seconds)
   fd_set writefds;
   fd_set exceptfds;
   struct timeval timeout;
+  uint64_t deadline, now;
+  int result;
 
   timeout.tv_sec=timeout_seconds;
   timeout.tv_usec=0;
@@ -65,11 +86,34 @@ rfbBool sock_wait_for_connected(int socket, unsigned int timeout_seconds)
       return FALSE;
   }
 
-  FD_ZERO(&writefds);
-  FD_SET(socket, &writefds);
-  FD_ZERO(&exceptfds);
-  FD_SET(socket, &exceptfds);
-  if (select(socket+1, NULL, &writefds, &exceptfds, &timeout)==1) {
+  if (!sock_monotonic_time(&now))
+    return FALSE;
+  deadline = now + (uint64_t)timeout_seconds * 1000000;
+
+  for (;;) {
+    FD_ZERO(&writefds);
+    FD_SET(socket, &writefds);
+    FD_ZERO(&exceptfds);
+    FD_SET(socket, &exceptfds);
+    result = select(socket+1, NULL, &writefds, &exceptfds, &timeout);
+    if (result >= 0)
+      break;
+#ifdef WIN32
+    errno = WSAGetLastError();
+#endif
+    if (errno != EINTR || !sock_monotonic_time(&now))
+      return FALSE;
+    if (now >= deadline) {
+      errno = ETIMEDOUT;
+      return FALSE;
+    }
+    timeout.tv_sec = (deadline - now) / 1000000;
+    timeout.tv_usec = (deadline - now) % 1000000;
+  }
+
+  if (result == 0)
+    errno = ETIMEDOUT;
+  if (result == 1) {
 #ifdef WIN32
     if (FD_ISSET(socket, &exceptfds))
       return FALSE;
@@ -85,6 +129,5 @@ rfbBool sock_wait_for_connected(int socket, unsigned int timeout_seconds)
 
   return FALSE;
 }
-
 
 
